@@ -1,15 +1,18 @@
-﻿using System;
-using CleanArchitecture.Core.Interfaces;
+﻿using Autofac;
+using Autofac.Extensions.DependencyInjection;
 using CleanArchitecture.Core.SharedKernel;
 using CleanArchitecture.Infrastructure.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using StructureMap;
 using Swashbuckle.AspNetCore.Swagger;
+using System;
+using System.Reflection;
 
 namespace CleanArchitecture.Web
 {
@@ -24,6 +27,12 @@ namespace CleanArchitecture.Web
 
         public IServiceProvider ConfigureServices(IServiceCollection services)
         {
+            services.Configure<CookiePolicyOptions>(options =>
+            {
+                // This lambda determines whether user consent for non-essential cookies is needed for a given request.
+                options.CheckConsentNeeded = context => true;
+                options.MinimumSameSitePolicy = SameSiteMode.None;
+            });
             // TODO: Add DbContext and IOC
             string dbName = Guid.NewGuid().ToString();
             services.AddDbContext<AppDbContext>(options =>
@@ -31,46 +40,33 @@ namespace CleanArchitecture.Web
                 //options.UseSqlServer(Configuration.GetConnectionString("DefaultConnection")));
 
             services.AddMvc()
-                .AddControllersAsServices();
+                .AddControllersAsServices()
+                .SetCompatibilityVersion(CompatibilityVersion.Version_2_1);
 
             services.AddSwaggerGen(c =>
             {
                 c.SwaggerDoc("v1", new Info { Title = "My API", Version = "v1" });
             });
 
-            var container = new Container();
-
-            container.Configure(config =>
-            {
-                config.Scan(_ =>
-                {
-                    _.AssemblyContainingType(typeof(Startup)); // Web
-                    _.AssemblyContainingType(typeof(BaseEntity)); // Core
-                    _.Assembly("CleanArchitecture.Infrastructure"); // Infrastructure
-                    _.WithDefaultConventions();
-                    _.ConnectImplementationsToTypesClosing(typeof(IHandle<>));
-                });
-                
-                // TODO: Add Registry Classes to eliminate reference to Infrastructure
-
-                // TODO: Move to Infrastucture Registry
-                config.For(typeof(IRepository<>)).Add(typeof(EfRepository<>));
-
-                //Populate the container using the service collection
-                config.Populate(services);
-            });
-
-            return container.GetInstance<IServiceProvider>();
+            return BuildDependencyInjectionProvider(services);
         }
 
-        public void ConfigureTesting(IApplicationBuilder app,
-            IHostingEnvironment env,
-            ILoggerFactory loggerFactory)
+        private static IServiceProvider BuildDependencyInjectionProvider(IServiceCollection services)
         {
-            this.Configure(app, env, loggerFactory);
-            SeedData.PopulateTestData(app.ApplicationServices.GetService<AppDbContext>());
-        }
+            var builder = new ContainerBuilder();
 
+            // Populate the container using the service collection
+            builder.Populate(services);
+
+            // TODO: Add Registry Classes to eliminate reference to Infrastructure
+            Assembly webAssembly = Assembly.GetExecutingAssembly();
+            Assembly coreAssembly = Assembly.GetAssembly(typeof(BaseEntity));
+            Assembly infrastructureAssembly = Assembly.GetAssembly(typeof(EfRepository)); // TODO: Move to Infrastucture Registry
+            builder.RegisterAssemblyTypes(webAssembly, coreAssembly, infrastructureAssembly).AsImplementedInterfaces();
+
+            IContainer applicationContainer = builder.Build();
+            return new AutofacServiceProvider(applicationContainer);
+        }
 
         public void Configure(IApplicationBuilder app, IHostingEnvironment env, ILoggerFactory loggerFactory)
         {
@@ -80,14 +76,16 @@ namespace CleanArchitecture.Web
             if (env.IsDevelopment())
             {
                 app.UseDeveloperExceptionPage();
-                app.UseBrowserLink();
             }
             else
             {
                 app.UseExceptionHandler("/Home/Error");
+                app.UseHsts();
             }
 
+            app.UseHttpsRedirection();
             app.UseStaticFiles();
+            app.UseCookiePolicy();
 
             // Enable middleware to serve generated Swagger as a JSON endpoint.
             app.UseSwagger();
